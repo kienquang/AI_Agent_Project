@@ -13,7 +13,7 @@ from core.rag_engine import retrieve_context
 load_dotenv()
 
 # 1. Định nghĩa công cụ
-N8N_WEBHOOK_URL = "http://localhost:5678/webhook-test/0c17876c-7199-4821-ab90-aeef0c2ef0d0" 
+N8N_WEBHOOK_URL = "https://hook.eu1.make.com/hiklukm85va8ikrm3x9cciql6ss4fvgr" 
 
 @tool
 def tao_ticket_ho_tro(customer_name: str, issue_description: str) -> str:
@@ -36,18 +36,15 @@ def tao_ticket_ho_tro(customer_name: str, issue_description: str) -> str:
         return f"❌ Lỗi kết nối khi tạo phiếu: {str(e)}"
     
 # 2. Khởi tạo Agent
-llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.1 ,max_tokens=512)
 tools = [tao_ticket_ho_tro]
 
 # Lời nhác hệ thống
 system_prompt = """
-BẠN LÀ MỘT CÔNG CỤ TỰ ĐỘNG. Khi cần gọi tao_ticket_ho_tro, bạn CHỈ ĐƯỢC trả về duy nhất định dạng JSON của công cụ đó.
-KHÔNG ĐƯỢC viết thêm bất kỳ từ nào như 'Sau đây là lời gọi hàm' hay dấu ngoặc nhọn lạ.
-Ví dụ định dạng chuẩn: {"customer_name": "...", "issue_description": "..."}
-"""
+Bạn là trợ lý hỗ trợ khách hàng của Công ty ABC. Khi khách hàng báo lỗi sản phẩm hoặc yêu cầu khiếu nại, hãy sử dụng công cụ tao_ticket_ho_tro để ghi nhận thông tin. Sau khi gọi công cụ, hãy phản hồi xác nhận ngắn gọn với khách hàng"""
 
 # Đóng gói Agent
-agent_executor = create_react_agent(model=llm, tools=tools, state_modifier=system_prompt)
+agent_executor = create_react_agent(model=llm, tools=tools, prompt=system_prompt)
 
 # 3. Hàm giao tiếp (web server gọi)
 def process_chat_message(request_messages: list) -> str:
