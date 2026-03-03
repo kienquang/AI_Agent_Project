@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # 1. KHỐI BACKEND (API & AGENT CỦA BẠN)
+  backend-agent:
+    build: . # Ra lệnh cho Docker tự build dựa trên file Dockerfile ở cùng thư mục
+    container_name: backend-agent
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data           # Mount thư mục data (chứa file chính sách)
+      - ./vector_db:/app/vector_db # Mount thư mục vector_db để lưu dữ liệu lâu dài
+      - ./.env:/app/.env           # Đưa các biến môi trường (API Key) vào
+    restart: unless-stopped
+    networks:
+      - agent-network
+
+  # 2. KHỐI FRONTEND (OPEN WEBUI)
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "3000:8080"
+    volumes:
+      - webui-data:/app/backend/data
+    environment:
+      # Tự động trỏ thẳng WebUI về Backend của bạn thông qua mạng nội bộ Docker
+      - OPENAI_API_BASE_URL=http://backend-agent:8000/v1
+      - OPENAI_API_KEY=sk-local-agent
+    restart: unless-stopped
+    depends_on:
+      - backend-agent # Phải đợi Backend chạy lên thì WebUI mới chạy
+    networks:
+      - agent-network
+
+  # 3. KHỐI CÔNG CỤ (n8n AUTOMATION)
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n-automation
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - n8n-data:/home/node/.n8n
+    restart: unless-stopped
+    networks:
+      - agent-network
+
+# Định nghĩa các ổ cứng ảo (Volumes) để lưu dữ liệu khi tắt máy
+volumes:
+  webui-data:
+  n8n-data:
+
+# Định nghĩa mạng nội bộ để 3 khối này nhìn thấy nhau
+networks:
+  agent-network:
+    driver: bridge

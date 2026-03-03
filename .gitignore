@@ -1,0 +1,9 @@
+# Ẩn môi trường ảo
+venv/
+__pycache__/
+
+# TUYỆT ĐỐI ẨN FILE CHỨA API KEY
+.env
+
+# Ẩn thư mục database cục bộ
+vector_db/
