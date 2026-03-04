@@ -1,18 +1,16 @@
-# Sử dụng Python 3.11 làm nền móng
 FROM python:3.11-slim
 
-# Thiết lập thư mục làm việc bên trong Container
+# Tạo một user mới để bảo mật (HF yêu cầu không chạy quyền root)
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:${PATH}"
+
 WORKDIR /app
 
-# Copy file requirements.txt vào và cài đặt thư viện
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=user:user requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-# Copy toàn bộ mã nguồn của dự án (core, data, main.py...) vào Container
-COPY . .
+COPY --chown=user:user . .
 
-# Mở cổng 8000 để giao tiếp
-EXPOSE 8000
-
-# Lệnh để khởi động Server khi Container chạy
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# HF mặc định chạy cổng 7860
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
