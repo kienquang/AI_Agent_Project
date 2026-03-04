@@ -80,4 +80,4 @@ def process_chat_message(request_messages: list) -> str:
     except Exception as e:
         # Nếu Groq lỗi định dạng tool, ta vẫn có câu trả lời dự phòng
         print(f"⚠️ Groq Tool Error: {e}")
-        return "Tôi đã ghi nhận vấn đề 'Quạt bị gãy cánh' của bạn và đang chuyển cho nhân viên xử lý ngay. Xin lỗi Kiên vì sự cố này!"
+        return "Tôi đã ghi nhận vấn đề của bạn và đang chuyển cho nhân viên xử lý ngay. Xin lỗi vì sự cố này!"
