@@ -33,7 +33,7 @@ if prompt := st.chat_input("Nhập câu hỏi hoặc yêu cầu của bạn...")
                 "messages": st.session_state.messages,
             }
             # Thay link này bằng link Render.com khi deploy lên cloud
-            response = requests.post("http://localhost:8000/v1/chat/completions", json=payload)
+            response = requests.post("https://kiendao744-ai-agent-backend.hf.space/v1/chat/completions", json=payload)
 
             if response.status_code == 200:
                 ai_reply = response.json()["choices"][0]["message"]["content"]
