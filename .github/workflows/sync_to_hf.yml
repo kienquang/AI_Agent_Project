@@ -16,4 +16,4 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         # Thay 'kienquang' và 'AI_Agent_Project' bằng Username và tên Space của bạn
-        run: git push -f https://kienquang:$HF_TOKEN@huggingface.co/spaces/kienquang/AI_Agent_Project main
+        run: git push -f https://huggingface.co/spaces/kiendao744/AI-Agent-Backend main
