@@ -1,10 +1,15 @@
 import streamlit as st
 import requests
+import uuid
 
 # Cấu hình trang web
 st.set_page_config(page_title="Hệ thống AI hỗ trợ ABC",page_icon="🤖")
 st.title("🤖 Trợ lý ảo Công ty ABC")
 st.caption("Giao diện được xây dựng bằng Streamlit - Nhẹ, nhanh, và hoàn toàn miễn phí.")
+
+# Khởi tạo session_id duy nhất cho trình dyuetej này
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
 # Khởi tạo bộ nhớ lưu lịch sử chat trên giao diện
 if "messages" not in st.session_state:
@@ -30,10 +35,12 @@ if prompt := st.chat_input("Nhập câu hỏi hoặc yêu cầu của bạn...")
             # Gọi API nội bộ của bạn 
             payload = {
                 "model": "llama-3.1-8b-instant",
-                "messages": st.session_state.messages,
+                "messages": [{"role": "user", "content": prompt}], # Chỉ cần gửi câu hiện tại
+                "user": st.session_state.session_id # Gửi session_id để backend biết đây là phiên nào,
             }
             # Thay link này bằng link Render.com khi deploy lên cloud
-            response = requests.post("https://kiendao744-ai-agent-backend.hf.space/v1/chat/completions", json=payload)
+            # response = requests.post("https://kiendao744-ai-agent-backend.hf.space/v1/chat/completions", json=payload)
+            response = requests.post("http://localhost:8000/v1/chat/completions", json=payload)
 
             if response.status_code == 200:
                 ai_reply = response.json()["choices"][0]["message"]["content"]

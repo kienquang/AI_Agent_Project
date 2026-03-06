@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import time
 
 # import bộ não từ core
-from core.agent_workflow import process_chat_message
+from core.agent_workflow import process_chat_messages
 
 app = FastAPI(title = "ABC Company - AI Agent API")
 
@@ -15,6 +15,7 @@ class Message(BaseModel):
 class ChatCompleteRequest(BaseModel):
     model: str
     messages: list[Message]
+    user: str = "default_session"
 
 # API endpoint
 @app.get("/v1/models")
@@ -31,8 +32,13 @@ async def get_models():
 async def chat_endpoint(request: ChatCompleteRequest):
     """Điểm tiếp nhận tin nhắn từ giao diện, ném cho Core xử lý và trả về"""
 
+    user_query = request.messages[-1].content  # Lấy câu hỏi mới nhất của user, vì cả phần lịch sử đã có đb 
+
+    # Lấy session id, nếu front không gửi thì dùng mặc định
+    session_id = request.user
+
     # gọi hàm xử lý chính trong core, nhận về câu trả lời
-    final_answer = process_chat_message(request.messages)
+    final_answer = process_chat_messages(user_query, session_id)
 
     # trả về kết quả theo chuẩn openapi
     return {
