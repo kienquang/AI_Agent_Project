@@ -16,6 +16,8 @@ from langgraph.checkpoint.postgres import PostgresSaver
 
 # Nhập RAG
 from core.rag_engine import retrieve_context
+# Dịnh nghĩa khuôn dữ liệu
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -92,62 +94,39 @@ def rag_agent_node(state: AgentState):
     response = llm.invoke([SystemMessage(content=prompt)]+ messages)
     return {"messages": [response]}
 
+# Tạo một cái khuôn ép AI phải tuân theo
+class TicketData(BaseModel):
+    name: str = Field(description="Tên của khách hàng. Bắt buộc phải để trống '' nếu khách chưa xưng tên.")
+    issue: str = Field(description="Vấn đề khiếu nại của khách. Để trống '' nếu chưa rõ.")
+
 def action_agent_node(state: AgentState):
-    """Chuyên viên Xử lý: Gọi Webhook"""
-    print("🛠️ [Action Agent] Đang xử lý khiếu nại/tạo Ticket...")
+    """Chuyên viên Xử lý: Trích xuất bằng Pydantic & Gọi Webhook"""
+    print("🛠️ [Action Agent] Đang phân tích dữ liệu tạo Ticket...")
     messages = state["messages"]
 
-    # Để đơn giản, ta nhờ LLM trích xuất tên và vấn đề từ lịch sử chat
-    extract_prompt = """
-    Nhiệm vụ của bạn là đọc lịch sử hội thoại và trích xuất dữ liệu.
-    BẠN LÀ MỘT CỖ MÁY XUẤT DỮ LIỆU. BẠN BỊ CẤM GIAO TIẾP NHƯ CON NGƯỜI.
-    BẮT BUỘC CHỈ ĐƯỢC PHÉP TRẢ VỀ DUY NHẤT 1 KHỐI DỮ LIỆU CÓ DẤU { } BAO QUANH.
+    # 1. Gọi mô hình 70B thông minh hơn, chuyên dùng để trích xuất dữ liệu
+    # Set temperature=0 để AI trả lời máy móc, chuẩn xác 100% không bay bổng
+    llm_smart = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
     
-    QUY TẮC:
-    1. Tuyệt đối KHÔNG viết thêm bất kỳ câu chào hỏi, giải thích hay câu hỏi nào.
-    2. Nếu khách CHƯA XƯNG TÊN, phần "name" BẮT BUỘC là chuỗi rỗng "". KHÔNG điền "Khách hàng", "Ẩn danh".
-    3. Nếu khách CHƯA NÓI RÕ LỖI, phần "issue" BẮT BUỘC là chuỗi rỗng "".
+    # 2. Ép LLM phải trả về đúng định dạng của TicketData (KHÔNG trả về text thường)
+    structured_llm = llm_smart.with_structured_output(TicketData)
 
-    MẪU BẮT BUỘC PHẢI TUÂN THEO:
-    {
-        "name": "", 
-        "issue": ""
-    }
-    VÍ DỤ 1 (Khách chưa xưng tên):
-    Khách nói: "Tôi muốn khiếu nại thái độ nhân viên"
-    Output BẮT BUỘC:
-    {
-        "name": "", 
-        "issue": "thái độ nhân viên"
-    }
-
-    VÍ DỤ 2 (Khách đã xưng tên):
-    Khách nói: "Tôi tên Kiên, cho tôi hỏi về dịch vụ"
-    Output BẮT BUỘC:
-    {
-        "name": "Kiên", 
-        "issue": "hỏi về dịch vụ"
-    }
-    """
-    raw_response = llm.invoke([SystemMessage(content=extract_prompt)] + messages).content.strip()
-    print(f"🛠️ [Action Agent] Dữ liệu thô AI trích xuất: {raw_response}", flush=True)
+    # 3. Tạo một System Prompt ngắn để nhấn mạnh nhiệm vụ
+    system_prompt = SystemMessage(content="""
+    Đọc lịch sử trò chuyện và trích xuất Tên và Vấn đề của khách hàng.
+    Tuân thủ tuyệt đối các quy tắc trong mô tả dữ liệu. Nếu không có thông tin, bắt buộc để chuỗi rỗng "".
+    """)
 
     try:
-        # Dùng Regex để quét từ dấu { đầu tiên đến dấu } cuối cùng
-        match = re.search(r'\{.*\}', raw_response, re.DOTALL)
-        
-        if not match:
-            # Nếu AI không trả về bất kỳ dấu ngoặc nhọn nào
-            print("❌ [Action Agent] Không tìm thấy dấu { } trong câu trả lời.", flush=True)
-            return {"messages": [AIMessage(content="Dạ anh/chị có thể nói rõ hơn về tên và vấn đề để em ghi nhận không ạ?")]}
+        print("🛠️ [Action Agent] Đang ép khuôn dữ liệu...", flush=True)
+        # Bắt AI chạy (truyền system prompt cùng lịch sử chat vào)
+        extracted_data = structured_llm.invoke([system_prompt] + messages)
 
-        # Lấy phần chuỗi JSON nguyên chất đã được lọc
-        clean_json_str = match.group(0)
-        
-        # Phân tích JSON
-        data = json_lib.loads(clean_json_str)
-        name = data.get("name", "").strip()
-        issue = data.get("issue", "").strip()
+        # Trích xuất dữ liệu thẳng từ Object, KHÔNG CẦN REGEX hay JSON LOADS nữa!
+        name = extracted_data.name.strip()
+        issue = extracted_data.issue.strip()
+
+        print(f"🛠️ [Action Agent] Kết quả -> Tên: '{name}', Vấn đề: '{issue}'", flush=True)
         # Kiem tra điều kiện
         # Nếu AI không tìm thấy tên, hoặc cố tình bịa ra các chữ như "Tên", "Khách hàng"
         name_lower = name.lower()
