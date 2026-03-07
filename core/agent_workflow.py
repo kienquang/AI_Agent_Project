@@ -1,3 +1,5 @@
+import os
+
 import httpx
 from typing import Annotated, Literal
 # from streamlit import json
@@ -10,12 +12,15 @@ from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 
 # Nhập RAG
 from core.rag_engine import retrieve_context
 
 load_dotenv()
+
+# Lấy URL Database từ file .env
+DB_URL = os.getenv("DATABASE_URL")
 
 # 1. Định nghĩa state (Bộ nhớ của đoạn chat)
 class AgentState(TypedDict):
@@ -112,7 +117,7 @@ def action_agent_node(state: AgentState):
     print(f"🛠️ [Action Agent] Dữ liệu thô AI trích xuất: {raw_response}", flush=True)
 
     try:
-        # VŨ KHÍ MỚI: Dùng Regex để "quét" từ dấu { đầu tiên đến dấu } cuối cùng
+        # Dùng Regex để quét từ dấu { đầu tiên đến dấu } cuối cùng
         match = re.search(r'\{.*\}', raw_response, re.DOTALL)
         
         if not match:
@@ -202,7 +207,12 @@ def process_chat_messages(user_query: str, session_id: str):
 
     # MỞ KẾT NỐI DATABASE AN TOÀN TRONG NGỮ CẢNH CỦA REQUEST NÀY
     # Dùng "with" đảm bảo chạy xong request sẽ tự đóng DB, không bị kẹt!
-    with SqliteSaver.from_conn_string("memory.sqlite") as memory:
+    with PostgresSaver.from_conn_string(DB_URL) as memory:
+        # Lệnh setup() này cực kỳ thông minh: Lần đầu tiên chạy, nó sẽ tự động 
+        # chui vào PostgreSQL tạo các bảng cần thiết (checkpoints, checkpoint_writes).
+        # Các lần sau nó sẽ tự bỏ qua
+        memory.setup()
+
         # Lắp trí nhớ vào Graph ngay tại thời điểm gọi
         app_graph = workflow.compile(checkpointer=memory)
         
