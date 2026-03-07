@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 
 # Import các công cụ xử lý văn bản
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 
@@ -18,8 +18,24 @@ DB_URL = os.getenv("DATABASE_URL")
 if DB_URL and DB_URL.startswith("postgresql://"):
     DB_URL = DB_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
-DATA_PATH = "data/chinh_sach_abc.md"
 COLLECTION_NAME = "chinh_sach_cong_ty"
+
+def load_multiple_formats(directory):
+    all_docs = []
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+        
+        # Nếu là file PDF
+        if filename.endswith(".pdf"):
+            loader = PyPDFLoader(file_path)
+            all_docs.extend(loader.load())
+            
+        # Nếu là file Text hoặc Markdown
+        elif filename.endswith(".txt") or filename.endswith(".md"):
+            loader = TextLoader(file_path, encoding='utf-8')
+            all_docs.extend(loader.load())
+            
+    return all_docs
 
 def upload_to_pgvector():
     if not DB_URL:
@@ -28,9 +44,8 @@ def upload_to_pgvector():
     print("⚙️ Đang tải mô hình ngôn ngữ (Embeddings)...")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    print(f"📖 Đang đọc file tài liệu từ {DATA_PATH}...")
-    loader = TextLoader(DATA_PATH, encoding='utf-8')
-    documents = loader.load()
+    # Cấu hình "máy quét" thư mục
+    documents = load_multiple_formats('data/')
 
     print("✂️ Đang băm nhỏ tài liệu (Chunking)...")
     text_splitter = RecursiveCharacterTextSplitter(

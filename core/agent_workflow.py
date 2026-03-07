@@ -76,6 +76,7 @@ def rag_agent_node(state: AgentState):
     user_query = messages[-1].content
 
     context = retrieve_context(user_query)
+    print(f"🔍 [Debug RAG] Context lấy được từ DB: {context}", flush=True)
 
     prompt = f"""
     Bạn là nhân viên tư vấn của Công ty ABC. TUYỆT ĐỐI tuân thủ 2 quy tắc sau:
@@ -111,6 +112,21 @@ def action_agent_node(state: AgentState):
     {
         "name": "", 
         "issue": ""
+    }
+    VÍ DỤ 1 (Khách chưa xưng tên):
+    Khách nói: "Tôi muốn khiếu nại thái độ nhân viên"
+    Output BẮT BUỘC:
+    {
+        "name": "", 
+        "issue": "thái độ nhân viên"
+    }
+
+    VÍ DỤ 2 (Khách đã xưng tên):
+    Khách nói: "Tôi tên Kiên, cho tôi hỏi về dịch vụ"
+    Output BẮT BUỘC:
+    {
+        "name": "Kiên", 
+        "issue": "hỏi về dịch vụ"
     }
     """
     raw_response = llm.invoke([SystemMessage(content=extract_prompt)] + messages).content.strip()

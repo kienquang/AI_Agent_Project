@@ -39,5 +39,5 @@ def retrieve_context(query: str, top_k: int = 2) -> str:
 # Test nhanh nếu chạy file này trực tiếp
 if __name__ == "__main__":
     print("Test tra cứu câu hỏi: 'Bảo hành điện thoại mấy tháng?'")
-    ket_qua = retrieve_context("Bảo hành điện thoại mấy tháng?")
+    ket_qua = retrieve_context("yêu cầu tuyển thực tập sinh")
     print(f"\nKết quả:\n{ket_qua}")
