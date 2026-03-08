@@ -97,6 +97,7 @@ def rag_agent_node(state: AgentState):
 # Tạo một cái khuôn ép AI phải tuân theo
 class TicketData(BaseModel):
     name: str = Field(description="Tên của khách hàng. Bắt buộc phải để trống '' nếu khách chưa xưng tên.")
+    email: str = Field(description="Email khách hàng. Trống '' nếu chưa cung cấp.")
     issue: str = Field(description="Vấn đề khiếu nại của khách. Để trống '' nếu chưa rõ.")
 
 def action_agent_node(state: AgentState):
@@ -124,9 +125,10 @@ def action_agent_node(state: AgentState):
 
         # Trích xuất dữ liệu thẳng từ Object, KHÔNG CẦN REGEX hay JSON LOADS nữa!
         name = extracted_data.name.strip()
+        email = extracted_data.email.strip()
         issue = extracted_data.issue.strip()
 
-        print(f"🛠️ [Action Agent] Kết quả -> Tên: '{name}', Vấn đề: '{issue}'", flush=True)
+        print(f"🛠️ [Action Agent] Kết quả -> Tên: '{name}',Email: '{email}', Vấn đề: '{issue}'", flush=True)
         # Kiem tra điều kiện
         # Nếu AI không tìm thấy tên, hoặc cố tình bịa ra các chữ như "Tên", "Khách hàng"
         name_lower = name.lower()
@@ -140,11 +142,14 @@ def action_agent_node(state: AgentState):
         
         if not issue:
             return {"messages": [AIMessage(content="Dạ anh/chị đang gặp sự cố cụ thể là gì để em ghi chú chi tiết vào phiếu kỹ thuật ạ?")]}
+        
+        if not email or "@" not in email:
+            return {"messages": [AIMessage(content="Dạ anh/chị cho em xin thêm địa chỉ Email để hệ thống gửi mã theo dõi phiếu hỗ trợ nhé?")]}
         #  Nếu đã đủ thông tin thì mới gọi webhook tạo ticket
         print(f"🛠️ [Action Agent] Đủ thông tin. Bắn Webhook cho {name}...", flush=True)
 
         # Gọi webhook để tạo ticket
-        response = httpx.post(N8N_WEBHOOK_URL, json={"name": name, "issue": issue}, timeout=5)
+        response = httpx.post(N8N_WEBHOOK_URL, json={"name": name,"email": email, "issue": issue}, timeout=5)
 
         if response.status_code == 200:
             reply = f"Dạ, em đã tạo phiếu hỗ trợ sự cố cho anh/chị **{name}** rồi ạ. Bộ phận kỹ thuật sẽ liên hệ sớm nhất."
