@@ -16,6 +16,7 @@ class ChatCompleteRequest(BaseModel):
     model: str
     messages: list[Message]
     user: str = "default_session"
+    action: str = "chat" 
 
 # API endpoint
 @app.get("/v1/models")
@@ -32,25 +33,27 @@ async def get_models():
 async def chat_endpoint(request: ChatCompleteRequest):
     """Điểm tiếp nhận tin nhắn từ giao diện, ném cho Core xử lý và trả về"""
 
-    user_query = request.messages[-1].content  # Lấy câu hỏi mới nhất của user, vì cả phần lịch sử đã có đb 
+    # Chỉ cần lấy câu cuối cùng của khách
+    user_query = request.messages[-1].content if request.messages else ""
+    session_id = request.user 
+    action = request.action
+    
+    # Gọi hàm xử lý và nhận về Dictionary
+    result = process_chat_messages(user_query, session_id, action)
 
-    # Lấy session id, nếu front không gửi thì dùng mặc định
-    session_id = request.user
-
-    # gọi hàm xử lý chính trong core, nhận về câu trả lời
-    final_answer = process_chat_messages(user_query, session_id)
-
-    # trả về kết quả theo chuẩn openapi
+    # Trả về Custom Response chứa thông tin cho Giao diện UI vẽ Nút bấm
     return {
         "id": f"chatcmpl-{int(time.time())}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": request.model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": final_answer},
-                "finish_reason": "stop"
-            }
-        ]
+        "choices": [{
+            "index": 0, 
+            "message": {
+                "role": "assistant", 
+                "content": result["reply"],
+                "requires_confirmation": result["requires_confirmation"] # Báo cho UI biết phải vẽ 2 cái nút
+            }, 
+            "finish_reason": "stop"
+        }]
     }

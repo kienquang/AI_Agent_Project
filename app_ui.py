@@ -2,51 +2,69 @@ import streamlit as st
 import requests
 import uuid
 
-# Cấu hình trang web
-st.set_page_config(page_title="Hệ thống AI hỗ trợ ABC",page_icon="🤖")
-st.title("🤖 Trợ lý ảo Công ty ABC")
-st.caption("Giao diện được xây dựng bằng Streamlit - Nhẹ, nhanh, và hoàn toàn miễn phí.")
+# Cấu hình giao diện
+st.set_page_config(page_title="AI Agent Support", page_icon="🤖")
+st.title("🤖 AI Support Agent (Human-in-the-Loop)")
 
-# Khởi tạo session_id duy nhất cho trình dyuetej này
+# Khởi tạo Session ID
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
-# Khởi tạo bộ nhớ lưu lịch sử chat trên giao diện
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Biến để khóa khung chat khi đang chờ xác nhận
+if "awaiting_confirmation" not in st.session_state:
+    st.session_state.awaiting_confirmation = False
+
 # Hiển thị lịch sử chat
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-# Ô nhập tin nhắn mới
-if prompt := st.chat_input("Nhập câu hỏi hoặc yêu cầu của bạn..."):
-    # Hiển thị tin nhắn mới trên giao diện
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+# HÀM GỬI REQUEST LÊN BACKEND
+def send_to_backend(query: str, action: str = "chat"):
+    payload = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": query}],
+        "user": st.session_state.session_id,
+        "action": action
+    }
+    
+    try:
+        response = requests.post("http://localhost:8000/v1/chat/completions", json=payload)
+        response_data = response.json()
+        
+        reply_content = response_data["choices"][0]["message"]["content"]
+        requires_conf = response_data["choices"][0]["message"].get("requires_confirmation", False)
+        
+        # Lưu câu trả lời của AI vào lịch sử
+        st.session_state.messages.append({"role": "assistant", "content": reply_content})
+        st.session_state.awaiting_confirmation = requires_conf
+        
+        st.rerun() # Tải lại trang để vẽ giao diện mới
+    except Exception as e:
+        st.error(f"Lỗi kết nối Backend: {e}")
 
-    # Gửi request đến FastAPI backend
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        message_placeholder.markdown("Đang xử lý...")
-        try:
-            # Gọi API nội bộ của bạn 
-            payload = {
-                "model": "llama-3.1-8b-instant",
-                "messages": [{"role": "user", "content": prompt}], # Chỉ cần gửi câu hiện tại
-                "user": st.session_state.session_id # Gửi session_id để backend biết đây là phiên nào,
-            }
-            # Thay link này bằng link Render.com khi deploy lên cloud
-            # response = requests.post("https://kiendao744-ai-agent-backend.hf.space/v1/chat/completions", json=payload)
-            response = requests.post("http://localhost:8000/v1/chat/completions", json=payload)
-
-            if response.status_code == 200:
-                ai_reply = response.json()["choices"][0]["message"]["content"]
-                message_placeholder.markdown(ai_reply)
-                st.session_state.messages.append({"role": "assistant", "content": ai_reply})
-            else:
-                message_placeholder.error(f"Lỗi từ server: {response.status_code}")
-        except Exception as e:
-            message_placeholder.error(f"Lỗi kết nối: {e}")
+# XỬ LÝ KHUNG CHAT HOẶC NÚT BẤM
+if st.session_state.awaiting_confirmation:
+    # Nếu đang chờ, hiển thị 2 Nút bấm to đùng
+    st.warning("⚠️ Hệ thống đang chờ bạn xác nhận lệnh tạo phiếu!")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ ĐỒNG Ý TẠO PHIẾU", use_container_width=True):
+            st.session_state.messages.append({"role": "user", "content": "(Bạn đã bấm ĐỒNG Ý)"})
+            send_to_backend("", action="approve")
+    with col2:
+        if st.button("❌ HỦY BỎ LỆNH NÀY", use_container_width=True):
+            st.session_state.messages.append({"role": "user", "content": "(Bạn đã bấm HỦY BỎ)"})
+            send_to_backend("", action="reject")
+else:
+    # Nếu bình thường, hiển thị khung chat
+    if prompt := st.chat_input("Nhập vấn đề bạn đang gặp phải..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        with st.spinner("Đang suy nghĩ..."):
+            send_to_backend(prompt, action="chat")

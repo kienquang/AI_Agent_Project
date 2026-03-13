@@ -28,6 +28,7 @@ DB_URL = os.getenv("DATABASE_URL")
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     next_agent: str  #Lưu quyết định của supervisor
+    pending_ticket: dict # Lưu tạm dữ liệu Ticket chờ khách duyệt
 
 # 2. Khởi tạo LLM và công cụ
 llm = ChatGroq(model="llama-3.1-8b-instant")
@@ -100,8 +101,8 @@ class TicketData(BaseModel):
     email: str = Field(description="Email khách hàng. Trống '' nếu chưa cung cấp.")
     issue: str = Field(description="Vấn đề khiếu nại của khách. Để trống '' nếu chưa rõ.")
 
-def action_agent_node(state: AgentState):
-    """Chuyên viên Xử lý: Trích xuất bằng Pydantic & Gọi Webhook"""
+def prepare_ticket_node(state: AgentState):
+    """Chuyên viên Xử lý: Trích xuất bằng Pydantic"""
     print("🛠️ [Action Agent] Đang phân tích dữ liệu tạo Ticket...")
     messages = state["messages"]
 
@@ -145,24 +146,55 @@ def action_agent_node(state: AgentState):
         
         if not email or "@" not in email:
             return {"messages": [AIMessage(content="Dạ anh/chị cho em xin thêm địa chỉ Email để hệ thống gửi mã theo dõi phiếu hỗ trợ nhé?")]}
-        #  Nếu đã đủ thông tin thì mới gọi webhook tạo ticket
-        print(f"🛠️ [Action Agent] Đủ thông tin. Bắn Webhook cho {name}...", flush=True)
+        
+        # Nếu đủ thông tin thì lưu vào state và xin phép
+        print(f"📝 Đã đủ dữ liệu. Xin phép khách hàng tạo ticket cho {name}...", flush=True)
+        ticket_dict = {"name": name, "email": email, "issue": issue}
 
-        # Gọi webhook để tạo ticket
-        response = httpx.post(N8N_WEBHOOK_URL, json={"name": name,"email": email, "issue": issue}, timeout=5)
-
-        if response.status_code == 200:
-            reply = f"Dạ, em đã tạo phiếu hỗ trợ sự cố cho anh/chị **{name}** rồi ạ. Bộ phận kỹ thuật sẽ liên hệ sớm nhất."
-        else:
-            reply = "Rất tiếc hệ thống tạo phiếu đang bảo trì, anh chị gọi hotline giúp em nhé."
-        return {"messages": [AIMessage(content=reply)]}
-
-    except json_lib.JSONDecodeError:
-        print("❌ [Action Agent] Lỗi phân tích JSON từ AI.", flush=True)
-        return {"messages": [AIMessage(content="Dạ anh/chị có thể nói rõ hơn về tên và vấn đề để em ghi nhận không ạ?")]}
+        reply = f"Dạ, em chuẩn bị tạo phiếu hỗ trợ cho anh/chị **{name}** ({email}) với lỗi: **'{issue}'**.\n\nAnh/chị có đồng ý gửi thông tin này cho phòng kỹ thuật không ạ?"
+        
+        # trả về câu hỏi xin phép và lưu dữ liệu và biến pending_ticket
+        return {
+            "messages": [AIMessage(content=reply)], 
+            "pending_ticket": ticket_dict,
+            "next_agent": "EXECUTE" # Chuyển hướng tới Node Thực Thi
+        }
     except Exception as e:
         print(f"❌ [Action Agent] Lỗi mạng: {e}", flush=True)
         return {"messages": [AIMessage(content="Hệ thống đang bận, anh chị vui lòng thử lại sau nhé.")]}
+        
+def execute_ticket_node(state: AgentState):
+    """Thực thi tạo ticket khi khách hàng đồng ý"""
+    print("🚀 [Action Agent - Execute] Khách đã ĐỒNG Ý. Bắn Webhook Make.com...", flush=True)
+    ticket_data = state.get("pending_ticket")
+
+    if not ticket_data:
+        return {"messages": [AIMessage(content="Lỗi: Không tìm thấy dữ liệu phiếu chờ.")]}
+    
+    try:
+        # 1. Gọi API nằm gọn trong khối try
+        response = httpx.post(N8N_WEBHOOK_URL, json=ticket_data, timeout=5)
+        
+        # 2. Xử lý logic IF - ELSE ngang hàng nhau
+        if response.status_code == 200:
+            reply = "✅ Dạ em đã tạo phiếu thành công và bộ phận kỹ thuật sẽ liên hệ sớm nhất ạ."
+        else:
+            reply = "❌ Hệ thống tạo phiếu đang bảo trì, anh chị thử lại sau nhé."
+            
+        # 3. Đưa RETURN ra ngoài ngang hàng với IF/ELSE.
+        # Đảm bảo dù thành công hay lỗi API, AI đều trả lời khách và XÓA dữ liệu tạm.
+        return {
+            "messages": [AIMessage(content=reply)], 
+            "pending_ticket": None
+        }
+        
+    except Exception as e:
+        # Nếu đứt cáp, sập mạng, cũng phải báo lỗi và xóa phiếu chờ
+        print(f"❌ [Action Agent] Lỗi Exception: {e}", flush=True)
+        return {
+            "messages": [AIMessage(content="Hệ thống đang bận, anh chị vui lòng thử lại sau nhé.")],
+            "pending_ticket": None
+        }
 
 def guard_node(state: AgentState):
     """Trạm kiểm soát an ninh: Chống Prompt Injection & Jailbreak"""
@@ -198,6 +230,15 @@ def guard_node(state: AgentState):
     print("✅ [Guard Node] Tin nhắn an toàn. Cho phép đi tiếp.")
     # Nếu an toàn, dán nhãn để đi tiếp tới Supervisor
     return {"next_agent": "SUPERVISOR"}
+
+def route_after_prepare(state: AgentState) -> str:
+    # Cảnh sát giao thông kiểm tra: Nếu trong túi CÓ phiếu chờ (đã đủ Tên, Email, Sự cố)
+    if state.get("pending_ticket"):
+        return "Execute_Ticket" # Cho xe chạy tiếp tới trạm tạo phiếu (sẽ bị chặn lại chờ bấm nút)
+    
+    # Nếu túi KHÔNG CÓ phiếu (Tức là AI đang bận hỏi tên/sự cố/email)
+    return "SUPERVISOR" # Quay đầu về Supervisor để chốt FINISH, trả khung chat cho khách gõ
+
 # 4. VẼ SƠ ĐỒ LUỒNG (GRAPH) VÀ GẮN TRÍ NHỚ (MEMORY)
 workflow = StateGraph(AgentState)
 
@@ -205,7 +246,8 @@ workflow = StateGraph(AgentState)
 workflow.add_node("GUARD", guard_node)
 workflow.add_node("SUPERVISOR", supervisor_node)
 workflow.add_node("RAG_Agent", rag_agent_node)
-workflow.add_node("Action_Agent", action_agent_node)
+workflow.add_node("Prepare_Ticket", prepare_ticket_node)
+workflow.add_node("Execute_Ticket", execute_ticket_node)
 
 # Thiết lập đường đi
 workflow.add_edge(START, "GUARD")
@@ -237,16 +279,25 @@ workflow.add_conditional_edges(
     route_logic,
     {
         "RAG": "RAG_Agent",
-        "ACTION": "Action_Agent",
+        "ACTION": "Prepare_Ticket",
         "FINISH": END
     }
 )
 
 workflow.add_edge("RAG_Agent", "SUPERVISOR")  # Sau khi RAG trả lời, quay lại Supervisor để kiểm tra nếu cần
-workflow.add_edge("Action_Agent", "SUPERVISOR")  # Sau khi Action_Agent xử lý, quay lại Supervisor để kiểm tra nếu cần
+# Sau khi chuẩn bị xong -> Bắt buộc rẽ vào Thực thi
+workflow.add_conditional_edges(
+    "Prepare_Ticket",
+    route_after_prepare,
+    {
+        "Execute_Ticket": "Execute_Ticket",
+        "SUPERVISOR": "SUPERVISOR"
+    }
+)
+workflow.add_edge("Execute_Ticket", "SUPERVISOR")
 
 # 5. Hàm giao tiếp cho API
-def process_chat_messages(user_query: str, session_id: str):
+def process_chat_messages(user_query: str, session_id: str, user_action: str = "chat"):
     """
     - user_query: Câu hỏi mới nhất.
     - session_id: Mã phiên chat (Để DB biết phải lục lại trí nhớ của ai).
@@ -262,14 +313,50 @@ def process_chat_messages(user_query: str, session_id: str):
         # Các lần sau nó sẽ tự bỏ qua
         memory.setup()
 
-        # Lắp trí nhớ vào Graph ngay tại thời điểm gọi
-        app_graph = workflow.compile(checkpointer=memory)
-        
-        response_state = app_graph.invoke(
-            {"messages": [HumanMessage(content=user_query)]}, 
-            config=config
+        # Biên dịch và cài đặt điểm dừng
+        app_graph = workflow.compile(
+            checkpointer=memory,
+            interrupt_before=["Execute_Ticket"] #Dừng lại trước khi chạy node này
         )
 
-    # Lấy tin nhắn cuối cùng do Rag hoặc Action Agent trả về
-    final_answer = response_state["messages"][-1].content
-    return final_answer
+        # Lấy trạng thái hiện tại của Graph
+        state = app_graph.get_state(config)
+
+        # Nếu Graph bị dừng ở state execute_ticket chờ xác nhận
+        if "Execute_Ticket" in state.next:
+            if user_action == "approve":
+                print("\n✅ Khách hàng ĐỒNG Ý. Cấp quyền chạy tiếp...", flush=True)
+                # Dùng None để Graph tự động chạy tiếp từ chỗ nó đang dừng
+                response_state = app_graph.invoke(None, config=config)
+
+            elif user_action == "reject":
+                print("\n❌ Khách hàng HỦY. Xóa dữ liệu tạm.", flush=True)
+                # CẬP NHẬT TRẠNG THÁI VÀ "GIẢ DANH" NODE ĐỂ BỎ QUA NÓ
+                app_graph.update_state(
+                    config, 
+                    {
+                        "pending_ticket": None,
+                        # Thêm thẳng câu trả lời của AI vào luôn để báo khách biết
+                        "messages": [AIMessage(content="Dạ, em đã hủy yêu cầu tạo phiếu theo ý anh/chị ạ. Anh/chị cần hỗ trợ gì thêm không?")]
+                    },
+                    as_node="Execute_Ticket" # TỪ KHÓA QUAN TRỌNG NHẤT
+                )
+                
+                # Sau khi đã bypass thành công, gọi lệnh invoke để hệ thống 
+                # chạy nốt chu trình về đích (Supervisor -> FINISH)
+                response_state = app_graph.invoke(None, config=config)
+
+        else:
+            # Nếu chạy bình thường (Chat)
+            response_state = app_graph.invoke(
+                {"messages": [HumanMessage(content=user_query)]}, 
+                config=config
+            )
+        # Kiểm tra xem SAU KHI chạy xong vòng này, nó có bị DỪNG lại không?
+        new_state = app_graph.get_state(config)
+        requires_confirmation = "Execute_Ticket" in new_state.next
+        
+        return {
+            "reply": response_state["messages"][-1].content,
+            "requires_confirmation": requires_confirmation
+        }
