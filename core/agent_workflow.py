@@ -18,19 +18,22 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from core.rag_engine import retrieve_context
 # Dịnh nghĩa khuôn dữ liệu
 from pydantic import BaseModel, Field
+# Bể conection cho DB
+from psycopg_pool import ConnectionPool
 
 load_dotenv()
 
 # Lấy URL Database từ file .env
 DB_URL = os.getenv("DATABASE_URL")
 # 1. Khởi tạo Context Manager
-memory_context = PostgresSaver.from_conn_string(DB_URL)
+# Khởi tạo Pool để duy trì kết nối bền bỉ với Cloud
+# Tham số min_size=1 giúp luôn giữ ít nhất 1 kết nối sống
+pool = ConnectionPool(conninfo=DB_URL, max_size=10, min_size=1, kwargs={"autocommit": True})
 
-# 2. "Mở túi" ngay lập tức để lấy đối tượng memory thật
-# Chúng ta dùng .__enter__() để giữ kết nối này sống suốt đời server
-memory = memory_context.__enter__() 
+# Khởi tạo memory từ pool thay vì từ chuỗi kết nối trực tiếp
+memory = PostgresSaver(pool)
 
-# 3. Bây giờ mới gọi setup() được
+# Chạy setup một lần
 memory.setup()
 # 1. Định nghĩa state (Bộ nhớ của đoạn chat)
 class AgentState(TypedDict):
@@ -40,7 +43,7 @@ class AgentState(TypedDict):
     summary: str   #Tóm tắt khi chat quá 6 tin nhắn
 
 # 2. Khởi tạo LLM và công cụ
-llm = ChatGroq(model="llama-3.1-8b-instant")
+llm = ChatGroq(model="llama-3.3-70b-versatile")
 N8N_WEBHOOK_URL = "https://hook.eu1.make.com/hiklukm85va8ikrm3x9cciql6ss4fvgr"
 
 # 3. Định nghĩa các Agent (NODES)
@@ -253,17 +256,21 @@ def memory_manager_node(state: AgentState):
     summary = state.get("summary", "")
 
     # Kích hoạt dọn rác nếu lịch sử hơn 6 tin nhắn
-    if len(messages) > 6:
+    if len(messages) > 26:
         print(f"🧹 [Memory Manager] Lịch sử đang có {len(messages)} tin. Đang dọn dẹp và tóm tắt...", flush=True)
 
         # lấy các tin nhắn cũ để tóm tắt, giữ lại 2 tin nhăn mới nhất
-        old_messages = messages[:-2]
+        old_messages = messages[:-6]
 
         # Nhờ AI tóm tắt
         summary_prompt = f"""
-        Bản tóm tắt cũ: "{summary}"
-        Hãy đọc đoạn hội thoại dưới đây và CẬP NHẬT bản tóm tắt.
-        CHỈ GIỮ LẠI CÁC THÔNG TIN QUAN TRỌNG: Tên khách hàng, Email, và Vấn đề khách đang gặp phải (nếu có). Trả lời rất ngắn gọn.
+            Bản tóm tắt cũ: "{summary}"
+            Hãy cập nhật bản tóm tắt dựa trên hội thoại mới.
+            NHIỆM VỤ BẮT BUỘC: 
+            1. Phải giữ lại Tên khách hàng (nếu đã biết).
+            2. Tóm tắt ngắn gọn vấn đề đang thảo luận.
+            3. Nếu khách hàng đã cung cấp Email, tuyệt đối không được làm mất.
+            Trả lời cực kỳ ngắn gọn, ví dụ: "Khách tên Kiên, đang phàn nàn về nhân viên, email: kien@gmail.com".
         """
 
         new_summary = llm.invoke([SystemMessage(content=summary_prompt)] + old_messages).content.strip()
