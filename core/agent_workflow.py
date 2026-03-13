@@ -9,7 +9,7 @@ from typing_extensions import TypedDict
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -23,12 +23,21 @@ load_dotenv()
 
 # Lấy URL Database từ file .env
 DB_URL = os.getenv("DATABASE_URL")
+# 1. Khởi tạo Context Manager
+memory_context = PostgresSaver.from_conn_string(DB_URL)
 
+# 2. "Mở túi" ngay lập tức để lấy đối tượng memory thật
+# Chúng ta dùng .__enter__() để giữ kết nối này sống suốt đời server
+memory = memory_context.__enter__() 
+
+# 3. Bây giờ mới gọi setup() được
+memory.setup()
 # 1. Định nghĩa state (Bộ nhớ của đoạn chat)
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     next_agent: str  #Lưu quyết định của supervisor
     pending_ticket: dict # Lưu tạm dữ liệu Ticket chờ khách duyệt
+    summary: str   #Tóm tắt khi chat quá 6 tin nhắn
 
 # 2. Khởi tạo LLM và công cụ
 llm = ChatGroq(model="llama-3.1-8b-instant")
@@ -81,14 +90,18 @@ def rag_agent_node(state: AgentState):
     context = retrieve_context(user_query)
     print(f"🔍 [Debug RAG] Context lấy được từ DB: {context}", flush=True)
 
+    summary = state.get("summary", "")
+    summary_text = f"\n[Thông tin đã biết về khách]: {summary}" if summary else ""
+
     prompt = f"""
     Bạn là nhân viên tư vấn của Công ty ABC. TUYỆT ĐỐI tuân thủ 2 quy tắc sau:
-    1. CHỈ sử dụng thông tin trong [TÀI LIỆU] dưới đây để trả lời.
+    1. CHỈ sử dụng thông tin trong [TÀI LIỆU] và [BẢN TÓM TẮT] dưới đây để trả lời.
     2. NẾU TÀI LIỆU KHÔNG CÓ THÔNG TIN (ví dụ: khách hỏi tuyển dụng, giá cả không có trong tài liệu), BẮT BUỘC phải trả lời: "Xin lỗi, hiện tại em chưa có thông tin về vấn đề này. Anh/chị vui lòng để lại thông tin hoặc gọi Hotline 1900-xxxx ạ."
     
     KHÔNG ĐƯỢC TỰ BỊA ĐẶT THÔNG TIN.
 
     [TÀI LIỆU]: {context}
+    [BẢN TÓM TẮT]: {summary_text}
     """
 
     # Truyền cả lịch sử chat vào để AI nhớ ngữ cảnh
@@ -113,9 +126,13 @@ def prepare_ticket_node(state: AgentState):
     # 2. Ép LLM phải trả về đúng định dạng của TicketData (KHÔNG trả về text thường)
     structured_llm = llm_smart.with_structured_output(TicketData)
 
+    # Lấy bản tóm tắt tin nhắn
+    summary = state.get("summary", "")
+    summary_text = f"Tóm tắt các thông tin trước đó: {summary}\n" if summary else ""
+
     # 3. Tạo một System Prompt ngắn để nhấn mạnh nhiệm vụ
     system_prompt = SystemMessage(content="""
-    Đọc lịch sử trò chuyện và trích xuất Tên và Vấn đề của khách hàng.
+    Đọc lịch sử trò chuyện và {summary_text} để trích xuất Tên và Vấn đề của khách hàng.
     Tuân thủ tuyệt đối các quy tắc trong mô tả dữ liệu. Nếu không có thông tin, bắt buộc để chuỗi rỗng "".
     """)
 
@@ -231,13 +248,44 @@ def guard_node(state: AgentState):
     # Nếu an toàn, dán nhãn để đi tiếp tới Supervisor
     return {"next_agent": "SUPERVISOR"}
 
+def memory_manager_node(state: AgentState):
+    messages = state["messages"]
+    summary = state.get("summary", "")
 
+    # Kích hoạt dọn rác nếu lịch sử hơn 6 tin nhắn
+    if len(messages) > 6:
+        print(f"🧹 [Memory Manager] Lịch sử đang có {len(messages)} tin. Đang dọn dẹp và tóm tắt...", flush=True)
+
+        # lấy các tin nhắn cũ để tóm tắt, giữ lại 2 tin nhăn mới nhất
+        old_messages = messages[:-2]
+
+        # Nhờ AI tóm tắt
+        summary_prompt = f"""
+        Bản tóm tắt cũ: "{summary}"
+        Hãy đọc đoạn hội thoại dưới đây và CẬP NHẬT bản tóm tắt.
+        CHỈ GIỮ LẠI CÁC THÔNG TIN QUAN TRỌNG: Tên khách hàng, Email, và Vấn đề khách đang gặp phải (nếu có). Trả lời rất ngắn gọn.
+        """
+
+        new_summary = llm.invoke([SystemMessage(content=summary_prompt)] + old_messages).content.strip()
+
+        # dùng RemoveMessage để xóa vĩnh viễn các tin cũ khỏi PostgreSQL
+        delete_commands = [RemoveMessage(id = m.id) for m in old_messages if m.id]
+
+        print(f"✂️ Đã cắt tỉa {len(delete_commands)} tin nhắn cũ. Trí nhớ mới: {new_summary}", flush=True)
+
+        # Cập nhật State: Thay summary mới và thực thi lệnh xóa
+        return {
+            "summary": new_summary,
+            "messages": delete_commands
+        }
+    return {} #Nếu nhỏ hơn 6 tin thì đi thẳng không làm gì
 
 # 4. VẼ SƠ ĐỒ LUỒNG (GRAPH) VÀ GẮN TRÍ NHỚ (MEMORY)
 workflow = StateGraph(AgentState)
 
 # Thêm các node
 workflow.add_node("GUARD", guard_node)
+workflow.add_node("MEMORY", memory_manager_node)
 workflow.add_node("SUPERVISOR", supervisor_node)
 workflow.add_node("RAG_Agent", rag_agent_node)
 workflow.add_node("Prepare_Ticket", prepare_ticket_node)
@@ -257,7 +305,7 @@ def route_logic(state:AgentState) ->str:
 def guard_router(state: AgentState) -> str:
     if state["next_agent"] == "FINISH":
         return "FINISH"
-    return "SUPERVISOR"
+    return "MEMORY"
 
 def route_after_prepare(state: AgentState) -> str:
     #  kiểm tra:(đã đủ Tên, Email, Sự cố)
@@ -271,10 +319,13 @@ workflow.add_conditional_edges(
     "GUARD",
     guard_router,
     {
-        "SUPERVISOR": "SUPERVISOR",  # Sạch -> Đẩy vào trong cho Supervisor
+        "MEMORY": "MEMORY",  # Sạch -> Đẩy vào trong cho Supervisor
         "FINISH": END                # Bẩn -> Đuổi ra ngoài (KẾT THÚC)
     }
 )
+
+# Từ Memory đi thẳng sang Supervisor
+workflow.add_edge("MEMORY", "SUPERVISOR")
 
 workflow.add_conditional_edges(
     "SUPERVISOR",
@@ -307,58 +358,50 @@ def process_chat_messages(user_query: str, session_id: str, user_action: str = "
     # Cấu hình thread_id để lấy lại trí nhớ
     config = {"configurable": {"thread_id": session_id}}
 
-    # MỞ KẾT NỐI DATABASE AN TOÀN TRONG NGỮ CẢNH CỦA REQUEST NÀY
-    # Dùng "with" đảm bảo chạy xong request sẽ tự đóng DB, không bị kẹt!
-    with PostgresSaver.from_conn_string(DB_URL) as memory:
-        # Lệnh setup() này cực kỳ thông minh: Lần đầu tiên chạy, nó sẽ tự động 
-        # chui vào PostgreSQL tạo các bảng cần thiết (checkpoints, checkpoint_writes).
-        # Các lần sau nó sẽ tự bỏ qua
-        memory.setup()
+    # Biên dịch và cài đặt điểm dừng
+    app_graph = workflow.compile(
+        checkpointer=memory,
+        interrupt_before=["Execute_Ticket"] #Dừng lại trước khi chạy node này
+    )
 
-        # Biên dịch và cài đặt điểm dừng
-        app_graph = workflow.compile(
-            checkpointer=memory,
-            interrupt_before=["Execute_Ticket"] #Dừng lại trước khi chạy node này
-        )
+    # Lấy trạng thái hiện tại của Graph
+    state = app_graph.get_state(config)
 
-        # Lấy trạng thái hiện tại của Graph
-        state = app_graph.get_state(config)
+    # Nếu Graph bị dừng ở state execute_ticket chờ xác nhận
+    if "Execute_Ticket" in state.next:
+        if user_action == "approve":
+            print("\n✅ Khách hàng ĐỒNG Ý. Cấp quyền chạy tiếp...", flush=True)
+            # Dùng None để Graph tự động chạy tiếp từ chỗ nó đang dừng
+            response_state = app_graph.invoke(None, config=config)
 
-        # Nếu Graph bị dừng ở state execute_ticket chờ xác nhận
-        if "Execute_Ticket" in state.next:
-            if user_action == "approve":
-                print("\n✅ Khách hàng ĐỒNG Ý. Cấp quyền chạy tiếp...", flush=True)
-                # Dùng None để Graph tự động chạy tiếp từ chỗ nó đang dừng
-                response_state = app_graph.invoke(None, config=config)
-
-            elif user_action == "reject":
-                print("\n❌ Khách hàng HỦY. Xóa dữ liệu tạm.", flush=True)
-                # CẬP NHẬT TRẠNG THÁI VÀ "GIẢ DANH" NODE ĐỂ BỎ QUA NÓ
-                app_graph.update_state(
-                    config, 
-                    {
-                        "pending_ticket": None,
-                        # Thêm thẳng câu trả lời của AI vào luôn để báo khách biết
-                        "messages": [AIMessage(content="Dạ, em đã hủy yêu cầu tạo phiếu theo ý anh/chị ạ. Anh/chị cần hỗ trợ gì thêm không?")]
-                    },
-                    as_node="Execute_Ticket" # TỪ KHÓA QUAN TRỌNG NHẤT
-                )
-                
-                # Sau khi đã bypass thành công, gọi lệnh invoke để hệ thống 
-                # chạy nốt chu trình về đích (Supervisor -> FINISH)
-                response_state = app_graph.invoke(None, config=config)
-
-        else:
-            # Nếu chạy bình thường (Chat)
-            response_state = app_graph.invoke(
-                {"messages": [HumanMessage(content=user_query)]}, 
-                config=config
+        elif user_action == "reject":
+            print("\n❌ Khách hàng HỦY. Xóa dữ liệu tạm.", flush=True)
+            # CẬP NHẬT TRẠNG THÁI VÀ "GIẢ DANH" NODE ĐỂ BỎ QUA NÓ
+            app_graph.update_state(
+                config, 
+                {
+                    "pending_ticket": None,
+                    # Thêm thẳng câu trả lời của AI vào luôn để báo khách biết
+                    "messages": [AIMessage(content="Dạ, em đã hủy yêu cầu tạo phiếu theo ý anh/chị ạ. Anh/chị cần hỗ trợ gì thêm không?")]
+                },
+                as_node="Execute_Ticket" # TỪ KHÓA QUAN TRỌNG NHẤT
             )
-        # Kiểm tra xem SAU KHI chạy xong vòng này, nó có bị DỪNG lại không?
-        new_state = app_graph.get_state(config)
-        requires_confirmation = "Execute_Ticket" in new_state.next
-        
-        return {
-            "reply": response_state["messages"][-1].content,
-            "requires_confirmation": requires_confirmation
-        }
+            
+            # Sau khi đã bypass thành công, gọi lệnh invoke để hệ thống 
+            # chạy nốt chu trình về đích (Supervisor -> FINISH)
+            response_state = app_graph.invoke(None, config=config)
+
+    else:
+        # Nếu chạy bình thường (Chat)
+        response_state = app_graph.invoke(
+            {"messages": [HumanMessage(content=user_query)]}, 
+            config=config
+        )
+    # Kiểm tra xem SAU KHI chạy xong vòng này, nó có bị DỪNG lại không?
+    new_state = app_graph.get_state(config)
+    requires_confirmation = "Execute_Ticket" in new_state.next
+    
+    return {
+        "reply": response_state["messages"][-1].content,
+        "requires_confirmation": requires_confirmation
+    }
