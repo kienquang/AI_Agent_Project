@@ -231,13 +231,7 @@ def guard_node(state: AgentState):
     # Nếu an toàn, dán nhãn để đi tiếp tới Supervisor
     return {"next_agent": "SUPERVISOR"}
 
-def route_after_prepare(state: AgentState) -> str:
-    # Cảnh sát giao thông kiểm tra: Nếu trong túi CÓ phiếu chờ (đã đủ Tên, Email, Sự cố)
-    if state.get("pending_ticket"):
-        return "Execute_Ticket" # Cho xe chạy tiếp tới trạm tạo phiếu (sẽ bị chặn lại chờ bấm nút)
-    
-    # Nếu túi KHÔNG CÓ phiếu (Tức là AI đang bận hỏi tên/sự cố/email)
-    return "SUPERVISOR" # Quay đầu về Supervisor để chốt FINISH, trả khung chat cho khách gõ
+
 
 # 4. VẼ SƠ ĐỒ LUỒNG (GRAPH) VÀ GẮN TRÍ NHỚ (MEMORY)
 workflow = StateGraph(AgentState)
@@ -264,6 +258,14 @@ def guard_router(state: AgentState) -> str:
     if state["next_agent"] == "FINISH":
         return "FINISH"
     return "SUPERVISOR"
+
+def route_after_prepare(state: AgentState) -> str:
+    #  kiểm tra:(đã đủ Tên, Email, Sự cố)
+    if state.get("pending_ticket"):
+        return "Execute_Ticket" # Cho xe chạy tiếp tới trạm tạo phiếu (sẽ bị chặn lại chờ bấm nút)
+    
+    # Nếu túi KHÔNG CÓ phiếu (Tức là AI đang bận hỏi tên/sự cố/email)
+    return "SUPERVISOR" # Quay đầu về Supervisor để chốt FINISH, trả khung chat cho khách gõ
 
 workflow.add_conditional_edges(
     "GUARD",
