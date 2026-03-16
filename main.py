@@ -3,7 +3,8 @@ from pydantic import BaseModel
 import time
 
 # import bộ não từ core
-from core.agent_workflow import process_chat_messages
+# from core.agent_workflow import process_chat_messages
+from core.engine import process_chat_messages
 
 app = FastAPI(title = "ABC Company - AI Agent API")
 
